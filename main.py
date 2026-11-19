@@ -1,6 +1,29 @@
 """gta6-trophy-rarity-forecast-01: forecast Exophase GTA VI trophy earn rates.
 
-Model v1 (written fresh for this entry):
+Model v2 (tweak round, 2026-11-19 ~12:30 UTC; v1 = commit 82d1462, tag v1):
+  v1 plus two measured changes, everything else identical:
+  (c) per-group spread recalibration from the real refresh event (median
+      logit move -1.59) and the launch analogs: story band 0.7-1.2 -> 0.8-1.4
+      (fast-rising story is hit hardest by a dilution refresh), grind band
+      1.2-1.8 -> 1.0-1.6 (slow trophies' rates move least). Measured on the
+      rebuilt synthetic generator: A 0.2392->0.2344, B 0.5209->0.5205,
+      C 0.2969->0.2870; practice 0.9692->0.9685. Small, but better in all
+      four measurements.
+  (d) the 100% trophy's q05 96.93% -> ~80% (INTRO_DOWN 3.5 -> 4.76). Under
+      a two-world mixture (quirk survives with prob p, else the rate falls
+      to ~1%), the q05 pinball premium is exactly tied at p = 0.95, lower
+      wins for every p < 0.95, and costs little above it. The rest of the
+      intro row is unchanged (q25+ stay in the survive world for any
+      p > 0.75). Cost in the survive world is ~0.002 on practice.
+  Rejected in this round, with reasons in results/experiments-tweak.md:
+  (a) asymmetric down-spread (all-groups and story-only variants fail their
+      written thresholds: B gains < A/C regressions); (b) separate E/N model
+      (wins 2/3 scenarios by dust, loses the mean); (e) S-curve basis for
+      story (overshoots: B 0.52->0.90); (f) effective horizon (net ~0);
+      (g) narrower slow-group spreads (synthetic gain smaller than the
+      practice regression it causes, and it bets on generator optimism about
+      grind earners that contradicts launch evidence).
+
   - Rate is earners over tracked players: r = E / N.  Each read's per-trophy
     earner count is reconstructed as round(rate * N / 100) and checked against
     the read's trophies_earned total (a warning on stderr if it ever disagrees;
@@ -32,12 +55,12 @@ Model v1 (written fresh for this entry):
     (Ch1 >= Ch2 >= Ch3 >= Ch4 >= final mission) and platinum <= 100%-completion
     <= every other trophy, because the story cohort is nested.
   - Spread per trophy is s = sqrt(fit^2 + refresh^2 + floor^2) on the logit
-    scale, floor 0.5, clamped to a per-group band (story 0.7-1.2, activity /
-    strand 0.9-1.5, grind 1.2-1.8, platinum / 100% 1.5-2.0).  The one trophy
+    scale, floor 0.5, clamped to a per-group band (story 0.8-1.4, activity /
+    strand 0.9-1.5, grind 1.0-1.6, platinum / 100% 1.5-2.0).  The one trophy
     sitting at 100% ("Just Like Paradise") keeps median ~99.99 but gets a wide
     downward-only spread: if that 100% is an Exophase quirk that gets fixed,
     its rate can fall a long way, and a q05 pinned near 100 would be punished
-    hard (pinball ~3.08/5 on that trophy alone).
+    hard (pinball ~3.08/5 on that trophy alone); v2 sets q05 ~80% instead.
   - A trophy with no usable rate in any read falls back to its group prior;
     a trophy that appears only in later reads is fitted from what exists.
     Nothing here reads the network; output is deterministic.
@@ -72,7 +95,10 @@ SHRINK_K = 2.0
 SPREAD_FLOOR = 0.5
 SPREAD_REFRESH_DEFAULT = 0.3
 # The 100% trophy's downward-only spread (see module docstring).
-INTRO_DOWN = 3.5
+# v2 (d): INTRO_DOWN 3.5 -> 4.76, so the 100% trophy's q05 is ~80%
+# instead of 96.93% (mixture premium table in results/experiments-tweak.md:
+# exact tie at p(survive)=0.95, wins for every p < 0.95).
+INTRO_DOWN = 4.76
 INTRO_UP = 0.5
 
 # Named story missions (ids 8-13): descriptions as they appear in the case.
@@ -145,23 +171,23 @@ def classify(trophy: dict):
     if desc == "Complete Gone Fishing.":
         return ("intro", 100.0, 0.0, 0.0)
     if "Complete Chapter 1." in desc:
-        return ("story", 70.0, 0.7, 1.2)
+        return ("story", 70.0, 0.8, 1.4)
     if "Complete Chapter 2." in desc:
-        return ("story", 55.0, 0.7, 1.2)
+        return ("story", 55.0, 0.8, 1.4)
     if "Complete Chapter 3." in desc:
-        return ("story", 40.0, 0.7, 1.2)
+        return ("story", 40.0, 0.8, 1.4)
     if "Complete Chapter 4." in desc:
-        return ("story", 25.0, 0.7, 1.2)
+        return ("story", 25.0, 0.8, 1.4)
     if desc == "Complete the final mission.":
-        return ("story", 10.0, 0.7, 1.2)
+        return ("story", 10.0, 0.8, 1.4)
     if desc in STORY_MISSIONS:
-        return ("story", 25.0, 0.7, 1.2)
+        return ("story", 25.0, 0.8, 1.4)
     if "Attain 100% Completion." in desc:
         return ("completion", 0.5, 1.5, 2.0)
     if "final mission for" in desc or "mission strands" in desc:
         return ("strand", 15.0, 0.9, 1.5)
     if any(w in desc for w in GRIND_WORDS):
-        return ("grind", 8.0, 1.2, 1.8)
+        return ("grind", 8.0, 1.0, 1.6)
     return ("activity", 30.0, 0.9, 1.5)
 
 
