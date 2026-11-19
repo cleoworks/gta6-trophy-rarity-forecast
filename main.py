@@ -1,6 +1,47 @@
 """gta6-trophy-rarity-forecast-01: forecast Exophase GTA VI trophy earn rates.
 
-Model v2 (tweak round, 2026-11-19 ~12:30 UTC; v1 = commit 82d1462, tag v1):
+Model v3 (tweak round 2, 2026-11-19 ~12:45 UTC; v2 = commit da05a33, tag v2):
+  v2 plus ONE measured change — a minimax median blend toward persistence:
+  after all other median work, each trophy's median (logit) is pulled 35%
+  of the way toward the logit of its last observed rate (BLEND_ALPHA = 0.35).
+  The 100% trophy is untouched (last rate 100); trophies with no last rate
+  keep their fitted median. Rationale, measured on TWO independent synthetic
+  generators (harness/gen.py and harness2/gen2.py, the second built with
+  Poisson refreshes, daily buyer cohorts + weekend surge, and per-group
+  hazards drawn from research-analog ranges — frozen before any experiment
+  was measured): v2's extrapolated median systematically OVERSHOOTS in the
+  second generator's world (Ch1 median 59.5% vs truth 46.1% in scenario A;
+  final 5.0% vs 2.8%), because a log-linear fit extrapolates a fast early
+  climb too steeply, and the same overshoot is what makes v2 lose to
+  persistence whenever a late dilution shock divides rates by ~3. The blend
+  is a hedge between the two plausible worlds: the generators disagree on
+  the sign of v2's median error in scenario A, so no single median is right
+  in both — the blend wins on the average and on the worst case.
+  Measured (practice + 6 synthetic scenarios): practice 0.9721 (v2 0.9708);
+  gen1 A 0.3030 / B 0.3823 / C 0.3861 (v2: 0.2367 / 0.5228 / 0.2893);
+  gen2 A 0.2109 / B 0.6551 / C 0.2664 (v2: 0.3367 / 1.1470 / 0.3102);
+  mean of 6: 0.3673 (v2 0.4738, -0.1065); worst case 1.1470 -> 0.6551.
+  The full alpha curve (mean of 6): 0.00 -> 0.4738, 0.15 -> 0.4161,
+  0.25 -> 0.3841, 0.35 -> 0.3673, 0.45 -> 0.3711, 0.50 -> 0.3752,
+  0.75 -> 0.4211 — the minimum is FLAT across 0.35-0.45; 0.35 is picked by
+  the pre-registered rule (best mean among variants passing: mean improves,
+  practice regresses <= 0.02, improves in >= 4 of 7 measurement sets).
+  HONEST LIMIT: v3 still loses to persistence in scenario B in BOTH
+  generators (gen1-B 0.3823 vs 0.3074; gen2-B 0.6551 vs 0.2269) — no alpha
+  reaches the explicit minimax target without destroying A/C (alpha 0.75
+  beats persistence in gen1-B only, at A/C +0.23/+0.29). Gen1 A/C cost
+  +0.066/+0.097. Full experiment tables: results/experiments-tweak2.md.
+  Rejected in this round, with reasons in results/experiments-tweak2.md:
+  (b) weekend-weighted target time (helps gen1 A/C slightly, hurts gen2
+  everywhere: the weekend weight raises medians that already overshoot);
+  (c1) story median -0.3 (passes the letter of the rule but gains only
+  -0.0089 mean, far below the blend; kept out, tested in combination too);
+  (c2) story-only down-spread 1.5 (mean gain -0.0009 = noise, 3/7 sets);
+  (a) at other alphas (0.15/0.25 pass but worse mean; 0.45/0.50 fail the
+  >=4/7-sets rule; 0.75 fails badly).
+
+  [Rest of the v2 docstring follows unchanged.]
+
   v1 plus two measured changes, everything else identical:
   (c) per-group spread recalibration from the real refresh event (median
       logit move -1.59) and the launch analogs: story band 0.7-1.2 -> 0.8-1.4
@@ -98,6 +139,10 @@ SPREAD_REFRESH_DEFAULT = 0.3
 # v2 (d): INTRO_DOWN 3.5 -> 4.76, so the 100% trophy's q05 is ~80%
 # instead of 96.93% (mixture premium table in results/experiments-tweak.md:
 # exact tie at p(survive)=0.95, wins for every p < 0.95).
+# TWEAK2 (a): minimax median blend toward persistence — fraction of the
+# extrapolated median (in logit space) pulled back to the last observed
+# rate. 0.0 = v2. Set per variant: 0.15 / 0.35.
+BLEND_ALPHA = 0.35
 INTRO_DOWN = 4.76
 INTRO_UP = 0.5
 
@@ -414,6 +459,18 @@ def forecast_case(case: dict, name: str) -> dict:
             med_logit[comp_i] = min(med_logit[comp_i], min(others))
     if plat_i is not None and comp_i is not None:
         med_logit[plat_i] = min(med_logit[plat_i], med_logit[comp_i])
+
+    # TWEAK2 (a): minimax blend — pull the extrapolated median toward the
+    # last observed rate (persistence), the B-world median proxy. The 100%
+    # trophy is untouched (last rate 100); trophies with no last rate keep
+    # their fitted median.
+    if states and BLEND_ALPHA > 0.0:
+        last_rates = states[-1][2]
+        for i in range(n_tr):
+            r = last_rates[i]
+            if r is None or r >= 99.99:
+                continue
+            med_logit[i] = (1.0 - BLEND_ALPHA) * med_logit[i] + BLEND_ALPHA * logit(r)
 
     rows = []
     for i, trophy in enumerate(trophies):
