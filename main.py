@@ -156,6 +156,28 @@ practice, real2 and realL2 are byte-identical to v8 (frozen mode /
 surge gate). The final case's last observed transition contains up
 groups (Chapter 1, fishing), so its forecast is unchanged from v8.
 
+Round 16 (v10) adds one information-gated term at the median
+stage, in non-frozen mode only: a story-chain progression flow.
+When the case history is sparse (<= 5 distinct states) and holds
+at least one detected jump, each story trophy after the first in
+id order receives half (kappa = 0.50, ramped in over the first
+8.5 h of horizon) of its predecessor's projected earner surplus
+over its own projection, computed from base projections with no
+cascade. The observed transitions put the whole chapter
+increment on the single position behind the large reservoir
+(S1->S2 frontier conversion 0.50; zero-gap positions did not
+move; the frontier advanced one chapter per transition), while
+in rich histories the per-trophy trends already identify the
+chain (measured story medians calibrated), so the term stays
+off there. Measured (results/experiments-tweak16.md): realL1
+0.8479 -> 0.8333, real2 0.5139 -> 0.4994, real1 0.2356 ->
+0.2311, entirely through Chapter 2, the frontier trophy;
+practice, realL2, both gen batteries and PRAK are byte-identical
+to v9. Scope honesty: the final case's history is sparse with
+jumps, so this term DOES fire there -- it is the first change
+since v5 whose final-case forecast differs from its predecessor,
+in the direction the two observed transitions support.
+
 Nothing here reads the network; output is deterministic.
 Quantiles are clamped to 0.01..99.99, non-decreasing, rounded to 4
 decimals half-up (same rounding as the starter).
@@ -800,6 +822,31 @@ def forecast_case(case: dict, name: str) -> dict:
             weights = [0.0] + [w / rest for w in weights[1:]]
         else:
             weights = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+
+    # ---- Round 16 (m1): story-chain progression flow, gated ----
+    # Design: results/experiments-tweak16.md. In sparse post-jump
+    # histories the frontier chapter's near-term earners are
+    # predicted better by its predecessor's projected stock (the
+    # reservoir) than by its own floor-bound trend: on the observed
+    # transitions the whole chapter increment landed on the single
+    # position behind the large reservoir (S1->S2 frontier
+    # conversion 0.50 at 8.5 h; zero-gap positions did not move),
+    # and the frontier moved one chapter per transition -- hence
+    # base projections only, no cascade. Rich histories (>= 6
+    # distinct states) identify the per-trophy trends directly
+    # (measured story medians there are already calibrated), so
+    # the term stays off there; frozen mode is untouched.
+    if not frozen_mode and n_past >= 1 and len(states) <= 5 and n_tgt:
+        seq = [i for i in range(n_tr) if groups[i][0] == "story"]
+        seq.sort(key=lambda i: trophies[i]["id"])
+        base_e = {i: sigmoid(med0[i]) * n_tgt for i in seq}
+        kappa = 0.5 * min(1.0, horizon_hours / 8.5)
+        for pos in range(1, len(seq)):
+            j = seq[pos]
+            gap = base_e[seq[pos - 1]] - base_e[j]
+            if gap > 0.0:
+                e_new = base_e[j] + kappa * gap
+                med0[j] = logit(100.0 * e_new / n_tgt)
 
     # ---- Component medians per trophy, monotonicity per component ----
     # v5 change (round-11 design "s3"): a group whose last jump factor
