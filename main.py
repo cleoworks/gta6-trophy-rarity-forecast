@@ -1,9 +1,10 @@
 """gta6-trophy-rarity-forecast-01: forecast Exophase GTA VI trophy earn rates.
 
-Model v4 (tweak round 9 design "t9_mix", sealed 2026-11-20): the t7_both
-control engine with its 2-component refresh overlay REPLACED by a scenario
-mixture over the number of refresh jumps in the horizon. Written fresh from
-the design in results/experiments-tweak9.md (+ experiments-tweak7.md §
+Model v5 (tweak round 11 design "s3", sealed 2026-11-20): the v4 engine
+(t9_mix, described below) plus ONE change -- an upward-jump (surge)
+component in the scenario mixture. Implemented fresh from the written
+design in results/experiments-tweak11.md on top of the v4 code, whose
+design is results/experiments-tweak9.md (+ experiments-tweak7.md §
 Desain t7, experiments-tweak6.md § Desain t6, research-exophase.md §3).
 
 Base engine (t7_both control):
@@ -64,14 +65,30 @@ the trend has not already assumed can shift the median).
   - Mixture quantiles by CDF bisection, 60 iterations, logit bracket
     [-12, 12]; per-component spread = control spread.
 
-Measured for this design (results/experiments-tweak9.md, 12 sets):
-practice 0.2519, real1 0.2357, gen1 0.1841/0.6368/0.2391,
-gen2 0.1749/0.6629/0.2509, mean6 0.3581 (best measured in any round),
-worst 0.7982, PRAK 0.2850/0.4698/0.1473/0.7982, coverage 0.982,
-robustness 8/8, deterministic. Sealed as v4 under the user's re-evaluated
-acceptance frame (headline + mean6), under which it beats v3 on every
-aggregate (practice 0.2519 vs 0.9721, real1 0.2357 vs 0.4348,
-mean6 0.3581 vs 0.3673).
+Surge components (the round-11 change): a transition group whose last
+jump factor f_g > 1 is an UP group; its components k >= 1 are
+m_k = m0 + k * min(ln f_g, ln 2) instead of crash components -- UNDAMPED
+(no c_k, no rho: the rho calibrated on downward jumps proved too strong
+for upward jumps) and with NO g subtraction (the K2 overlap for upward
+jumps is the E-trend slope, which under-extrapolates steps; subtracting
+g would zero the surge, exactly the round-7 K2 pattern). The ln 2 cap
+keeps one more jump from more than doubling a group's rate; it binds
+only in the final case (the observed up-factors 5.6x/10.9x are one-time
+public-wave onboarding, not a repeating pattern). Direction is decided
+per group from the case's own last jump (in-case factor, frozen prior,
+or smooth 1/3), never from any target. DOWN groups, the intro treatment,
+spread, blend and hurdle weights are exactly v4.
+
+Measured for this design (results/experiments-tweak11.md, 13 sets):
+practice 0.2530, real1 0.2357, real2 0.5139, gen1 0.1841/0.6368/0.2391,
+gen2 0.1749/0.6629/0.2509, mean6 0.3581, worst13 0.7949,
+PRAK 0.2861/0.4687/0.1434/0.7949, coverage 0.982. Byte-identical to v4
+on 12/13 sets (the surge cannot fire where every f_g <= 1); on real2 it
+moves only the two UP-group trophies (Chapter 1, fishing). Sealed as v5
+under the user's re-evaluated acceptance frame (headline + mean6,
+decision 2026-11-20 16:43 WIB), under which it weakly dominates v4 on
+every aggregate (practice/real1/mean6 identical, real2 0.5139 vs
+0.5427).
 
 Nothing here reads the network; output is deterministic.
 Quantiles are clamped to 0.01..99.99, non-decreasing, rounded to 4
@@ -113,6 +130,7 @@ DECAY_HOURS = 48.0
 WINDOW_BOOST = 0.8
 GATE_MULT = 0.03
 RHO_PRIOR = 0.689
+SURGE_CAP_LN = math.log(2.0)  # v5: per-component cap on the surge ln-factor
 J_N_PRIOR = 6.06
 J_N_SMOOTH = 3.0
 F_SMOOTH = 1.0 / 3.0
@@ -629,6 +647,14 @@ def forecast_case(case: dict, name: str) -> dict:
         weights += [0.0] * 5
 
     # ---- Component medians per trophy, monotonicity per component ----
+    # v5 change (round-11 design "s3"): a group whose last jump factor
+    # f_g > 1 is an UP group and gets surge components
+    # m_k = m0 + k * min(ln f_g, ln 2) for k >= 1 -- UNDAMPED (no c_k, no
+    # rho) and with NO g subtraction: the K2 overlap for upward jumps is
+    # the E-trend slope, which under-extrapolates steps rather than
+    # already assuming them (subtracting g would make the surge a no-op,
+    # exactly the round-7 K2 pattern). DOWN groups keep the v4 crash
+    # components exactly; k = 0 is m0 for every group.
     comp_meds = []  # comp_meds[k][i]
     raw_components = []
     for k in range(6):
@@ -636,8 +662,13 @@ def forecast_case(case: dict, name: str) -> dict:
         vec = []
         for i in range(n_tr):
             f_i = min(max(f_per[i], F_FLOOR), 1e9)
-            shift = max(0.0, ck * (-math.log(f_i)) - g_trend) if k > 0 else 0.0
-            vec.append(med0[i] - shift)
+            if k == 0:
+                vec.append(med0[i])
+            elif f_i > 1.0:
+                vec.append(med0[i] + k * min(math.log(f_i), SURGE_CAP_LN))
+            else:
+                shift = max(0.0, ck * (-math.log(f_i)) - g_trend)
+                vec.append(med0[i] - shift)
         raw_components.append(vec)
     for k in range(6):
         comp_meds.append(enforce_monotone(raw_components[k], trophies, intro_idx))
