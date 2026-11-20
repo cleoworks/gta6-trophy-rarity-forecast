@@ -1,113 +1,81 @@
 """gta6-trophy-rarity-forecast-01: forecast Exophase GTA VI trophy earn rates.
 
-Model v3 (tweak round 2, 2026-11-19 ~12:45 UTC; v2 = commit da05a33, tag v2):
-  v2 plus ONE measured change — a minimax median blend toward persistence:
-  after all other median work, each trophy's median (logit) is pulled 35%
-  of the way toward the logit of its last observed rate (BLEND_ALPHA = 0.35).
-  The 100% trophy is untouched (last rate 100); trophies with no last rate
-  keep their fitted median. Rationale, measured on TWO independent synthetic
-  generators (harness/gen.py and harness2/gen2.py, the second built with
-  Poisson refreshes, daily buyer cohorts + weekend surge, and per-group
-  hazards drawn from research-analog ranges — frozen before any experiment
-  was measured): v2's extrapolated median systematically OVERSHOOTS in the
-  second generator's world (Ch1 median 59.5% vs truth 46.1% in scenario A;
-  final 5.0% vs 2.8%), because a log-linear fit extrapolates a fast early
-  climb too steeply, and the same overshoot is what makes v2 lose to
-  persistence whenever a late dilution shock divides rates by ~3. The blend
-  is a hedge between the two plausible worlds: the generators disagree on
-  the sign of v2's median error in scenario A, so no single median is right
-  in both — the blend wins on the average and on the worst case.
-  Measured (practice + 6 synthetic scenarios): practice 0.9721 (v2 0.9708);
-  gen1 A 0.3030 / B 0.3823 / C 0.3861 (v2: 0.2367 / 0.5228 / 0.2893);
-  gen2 A 0.2109 / B 0.6551 / C 0.2664 (v2: 0.3367 / 1.1470 / 0.3102);
-  mean of 6: 0.3673 (v2 0.4738, -0.1065); worst case 1.1470 -> 0.6551.
-  The full alpha curve (mean of 6): 0.00 -> 0.4738, 0.15 -> 0.4161,
-  0.25 -> 0.3841, 0.35 -> 0.3673, 0.45 -> 0.3711, 0.50 -> 0.3752,
-  0.75 -> 0.4211 — the minimum is FLAT across 0.35-0.45; 0.35 is picked by
-  the pre-registered rule (best mean among variants passing: mean improves,
-  practice regresses <= 0.02, improves in >= 4 of 7 measurement sets).
-  HONEST LIMIT: v3 still loses to persistence in scenario B in BOTH
-  generators (gen1-B 0.3823 vs 0.3074; gen2-B 0.6551 vs 0.2269) — no alpha
-  reaches the explicit minimax target without destroying A/C (alpha 0.75
-  beats persistence in gen1-B only, at A/C +0.23/+0.29). Gen1 A/C cost
-  +0.066/+0.097. Full experiment tables: results/experiments-tweak2.md.
-  Rejected in this round, with reasons in results/experiments-tweak2.md:
-  (b) weekend-weighted target time (helps gen1 A/C slightly, hurts gen2
-  everywhere: the weekend weight raises medians that already overshoot);
-  (c1) story median -0.3 (passes the letter of the rule but gains only
-  -0.0089 mean, far below the blend; kept out, tested in combination too);
-  (c2) story-only down-spread 1.5 (mean gain -0.0009 = noise, 3/7 sets);
-  (a) at other alphas (0.15/0.25 pass but worse mean; 0.45/0.50 fail the
-  >=4/7-sets rule; 0.75 fails badly).
+Model v4 (tweak round 9 design "t9_mix", sealed 2026-11-20): the t7_both
+control engine with its 2-component refresh overlay REPLACED by a scenario
+mixture over the number of refresh jumps in the horizon. Written fresh from
+the design in results/experiments-tweak9.md (+ experiments-tweak7.md §
+Desain t7, experiments-tweak6.md § Desain t6, research-exophase.md §3).
 
-  [Rest of the v2 docstring follows unchanged.]
+Base engine (t7_both control):
+  - Rate is earners over tracked players: r = E / N. Distinct page states
+    only (first-seen time each); E_i(t) = round(rate * N / 100).
+  - Tracked players N: log-time fit ln N vs x = ln(1 + (t - launch)/18h),
+    recency weights 1+j, DAMPED extrapolation (L = 1.0):
+    ln N_tgt = ln N_last + slope * L * (1 - exp(-(x_tgt - x_last)/L)),
+    slope floored at 0, N_tgt >= N_last. s_N = fit residual scaled by
+    sqrt(1 + horizon_days / span_days).
+  - Earners E per trophy: log-time fit of ln E over the last 24h of
+    distinct states (fallback: all states), E <= 0 points skipped, slope
+    shrunk toward the group mean (SHRINK_K = 2), slope floored at 0,
+    intercept refit, E_tgt >= E_last, E_tgt capped at group cap x N_tgt.
+    Fewer than 2 usable E points: E_tgt = E_last, s_E = 0. A trophy never
+    observed falls back to its group prior (median cap/2, mid-band spread).
+  - Median m0 = logit(100 * E_tgt / N_tgt); spread
+    s = sqrt(s_E^2 + s_N^2 + 0.5^2) clamped to the per-group band, then
+    s x 0.7 symmetric (combo1). Story q05/q25 are widened x1.5 in logit
+    around q50 after the mixture bisection (down15-story).
+  - Blend alpha = 0.35: m0 (logit) pulled 35% toward logit(last rate)
+    BEFORE the mixture; the 100% trophy is untouched.
+  - Monotonicity (story chain Ch1 >= Ch2 >= Ch3 >= Ch4 >= final;
+    platinum <= 100%-completion <= every other trophy) is enforced on m0
+    and on every mixture component median.
+  - The intro trophy ("Complete Gone Fishing.") and any trophy at 100% in
+    the last read keep the v3 treatment: median ~99.99, downward-only
+    spread INTRO_DOWN = 4.76 (q05 ~80%), no mixture.
 
-  v1 plus two measured changes, everything else identical:
-  (c) per-group spread recalibration from the real refresh event (median
-      logit move -1.59) and the launch analogs: story band 0.7-1.2 -> 0.8-1.4
-      (fast-rising story is hit hardest by a dilution refresh), grind band
-      1.2-1.8 -> 1.0-1.6 (slow trophies' rates move least). Measured on the
-      rebuilt synthetic generator: A 0.2392->0.2344, B 0.5209->0.5205,
-      C 0.2969->0.2870; practice 0.9692->0.9685. Small, but better in all
-      four measurements.
-  (d) the 100% trophy's q05 96.93% -> ~80% (INTRO_DOWN 3.5 -> 4.76). Under
-      a two-world mixture (quirk survives with prob p, else the rate falls
-      to ~1%), the q05 pinball premium is exactly tied at p = 0.95, lower
-      wins for every p < 0.95, and costs little above it. The rest of the
-      intro row is unchanged (q25+ stay in the survive world for any
-      p > 0.75). Cost in the survive world is ~0.002 on practice.
-  Rejected in this round, with reasons in results/experiments-tweak.md:
-  (a) asymmetric down-spread (all-groups and story-only variants fail their
-      written thresholds: B gains < A/C regressions); (b) separate E/N model
-      (wins 2/3 scenarios by dust, loses the mean); (e) S-curve basis for
-      story (overshoots: B 0.52->0.90); (f) effective horizon (net ~0);
-      (g) narrower slow-group spreads (synthetic gain smaller than the
-      practice regression it causes, and it bets on generator optimism about
-      grind earners that contradicts launch evidence).
+Transition factors (per transition group: ch1 / chain / fishing /
+platgrind / other; intro excluded, factor 1.0):
+  - A jump event is a pair of consecutive distinct states with
+    N ratio >= 2.0 AND median rate ratio <= 0.75. f_g = median rate ratio
+    over the group's trophies at the LAST event (floored at 0.01);
+    J_N = that event's N ratio.
+  - No event, frozen history (1 distinct state): the launch->S1 priors
+    (Ch1 0.39, chain 0.21, fishing 0.57, plat/grind/completion 0.16,
+    strand/activity 0.19), J_N = 6.06.
+  - No event, smooth growth: uniform f = 1/3, J_N = 3.0.
 
-  - Rate is earners over tracked players: r = E / N.  Each read's per-trophy
-    earner count is reconstructed as round(rate * N / 100) and checked against
-    the read's trophies_earned total (a warning on stderr if it ever disagrees;
-    the forecast never crashes on it).
-  - The page is a step function: most reads repeat the previous page exactly.
-    The fit uses only DISTINCT page states (first-seen time of each state),
-    so a long frozen stretch cannot outweigh the reads where the page moved.
-  - Per trophy, logit(rate) is fitted against x = ln(1 + (t - launch) / tau)
-    with tau = 18h, by recency-weighted least squares, over the LAST 24 HOURS
-    of distinct page states only.  The early history is a different regime
-    (launch-night freeze, then a dilution dip as tracked players flood in):
-    a straight line fitted over the whole history averages the dip and the
-    recovery and extrapolates almost flat, while the recent window carries
-    the current trend.  (Measured: on synthetic long-horizon cases the
-    full-history fit lost to the house curve 0.90 vs 0.47; the 24h window
-    is the fix.)  The slope is shrunk toward its trophy group's mean slope
-    (thin trophies must not run wild), then the intercept is refit through
-    the data at the shrunk slope.  For the slowest groups (grind, platinum,
-    100%-completion) the slope is floored at 0: their observed logit-decline
-    is dilution, and denominator growth is front-loaded and decelerating
-    (638 -> 3,868 -> ~10,000 already slowed from 6x to 2.6x), so a constant
-    log-linear decline extrapolated 4.5 days forward overshoots the fall;
-    these rates bottom out instead.  When fewer than 2 distinct states fall
-    in the window, the fit falls back to all distinct states.
-  - The median at the target is pulled 25% back toward a per-group prior cap
-    when the fit overshoots it (a log-linear fit with no cap overshoots on
-    fast-rising story trophies); the fit is trusted over the prior otherwise.
-  - Medians are then made monotone along the story chain
-    (Ch1 >= Ch2 >= Ch3 >= Ch4 >= final mission) and platinum <= 100%-completion
-    <= every other trophy, because the story cohort is nested.
-  - Spread per trophy is s = sqrt(fit^2 + refresh^2 + floor^2) on the logit
-    scale, floor 0.5, clamped to a per-group band (story 0.8-1.4, activity /
-    strand 0.9-1.5, grind 1.0-1.6, platinum / 100% 1.5-2.0).  The one trophy
-    sitting at 100% ("Just Like Paradise") keeps median ~99.99 but gets a wide
-    downward-only spread: if that 100% is an Exophase quirk that gets fixed,
-    its rate can fall a long way, and a q05 pinned near 100 would be punished
-    hard (pinball ~3.08/5 on that trophy alone); v2 sets q05 ~80% instead.
-  - A trophy with no usable rate in any read falls back to its group prior;
-    a trophy that appears only in later reads is fitted from what exists.
-    Nothing here reads the network; output is deterministic.
+Scenario mixture (the round-9 change): components k = 0..5 jumps in the
+horizon (tail > 5 folded into k = 5), component median
+m_k = m0 - shift_k, shift_k = max(0, c_k * (-ln f_g) - g),
+g = ln(N_tgt / N_last) (the K2 correction: only the part of a transition
+the trend has not already assumed can shift the median).
+  - Damping: c_k = rho^n_past * (1 - rho^k) / (1 - rho), c_0 = 0, where
+    n_past = jumps already in the history and rho = median over groups of
+    ln(f_last)/ln(f_prev) when the history holds >= 2 jumps, else
+    RHO_PRIOR = 0.689.
+  - Weights (hurdle): w_0 = 1 - P1; w_k = P1 * Poisson(mu_eff; k) /
+    (1 - Poisson(mu_eff; 0)) for k >= 1, with mu = horizon_hours / 7.0
+    and mu_eff = mu * exp(-horizon_hours / 48).
+  - P1 is the t7 event engine: p_raw = 1 - exp(-dt/7), dt = target minus
+    last history read (hours); if the interval contains a 04:00 UTC
+    instant, p_raw = max(p_raw, 0.8), else p_raw *= 0.03 (the measured
+    gate; the written t5/t6 design said 0.08, the measured implementation
+    behaves as 0.03); P1 = p_raw * exp(-horizon_hours / 48).
+  - Mixture quantiles by CDF bisection, 60 iterations, logit bracket
+    [-12, 12]; per-component spread = control spread.
 
-Quantiles use z = (-1.645, -0.674, 0, 0.674, 1.645), clamped to 0.01..99.99,
-non-decreasing, rounded to 4 decimals half-up (same rounding as the starter).
+Measured for this design (results/experiments-tweak9.md, 12 sets):
+practice 0.2519, real1 0.2357, gen1 0.1841/0.6368/0.2391,
+gen2 0.1749/0.6629/0.2509, mean6 0.3581 (best measured in any round),
+worst 0.7982, PRAK 0.2850/0.4698/0.1473/0.7982, coverage 0.982,
+robustness 8/8, deterministic. Sealed as v4 under the user's re-evaluated
+acceptance frame (headline + mean6), under which it beats v3 on every
+aggregate (practice 0.2519 vs 0.9721, real1 0.2357 vs 0.4348,
+mean6 0.3581 vs 0.3673).
+
+Nothing here reads the network; output is deterministic.
+Quantiles are clamped to 0.01..99.99, non-decreasing, rounded to 4
+decimals half-up (same rounding as the starter).
 """
 
 import json
@@ -123,28 +91,42 @@ INPUT_DIR = Path(os.environ.get("MAKEFUN_INPUT_DIR", "/input"))
 OUTPUT_DIR = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
 
 LEVELS = [0.05, 0.25, 0.5, 0.75, 0.95]
-Z = [-1.645, -0.674, 0.0, 0.674, 1.645]
 
 # Launch: the house curve's origin (RULES: ln(1 + hours from 2026-11-19T00:00Z)).
 LAUNCH = datetime(2026, 11, 19, 0, 0, 0, tzinfo=timezone.utc)
 TAU_HOURS = 18.0
 
-# Shrinkage strength: a trophy's own slope counts as n_points observations,
-# its group mean counts as SHRINK_K.
 SHRINK_K = 2.0
-# Spread pieces (logit units).
 SPREAD_FLOOR = 0.5
-SPREAD_REFRESH_DEFAULT = 0.3
-# The 100% trophy's downward-only spread (see module docstring).
-# v2 (d): INTRO_DOWN 3.5 -> 4.76, so the 100% trophy's q05 is ~80%
-# instead of 96.93% (mixture premium table in results/experiments-tweak.md:
-# exact tie at p(survive)=0.95, wins for every p < 0.95).
-# TWEAK2 (a): minimax median blend toward persistence — fraction of the
-# extrapolated median (in logit space) pulled back to the last observed
-# rate. 0.0 = v2. Set per variant: 0.15 / 0.35.
 BLEND_ALPHA = 0.35
 INTRO_DOWN = 4.76
 INTRO_UP = 0.5
+
+# N-model damping length (in x units) and mixture machinery constants.
+N_DAMP_L = 1.0
+SPREAD_SYM = 0.7
+DOWN15 = 1.5
+EVENT_N_RATIO = 2.0
+EVENT_RATE_RATIO = 0.75
+HAZARD_HOURS = 7.0
+DECAY_HOURS = 48.0
+WINDOW_BOOST = 0.8
+GATE_MULT = 0.03
+RHO_PRIOR = 0.689
+J_N_PRIOR = 6.06
+J_N_SMOOTH = 3.0
+F_SMOOTH = 1.0 / 3.0
+F_FLOOR = 0.01
+
+# Launch->S1 transition priors per transition group (research-exophase §3).
+PRIOR_F = {
+    "ch1": 0.39,
+    "chain": 0.21,
+    "fishing": 0.57,
+    "platgrind": 0.16,
+    "other": 0.19,
+    "intro": 1.00,
+}
 
 # Named story missions (ids 8-13): descriptions as they appear in the case.
 STORY_MISSIONS = {
@@ -187,6 +169,21 @@ def sigmoid(lg: float) -> float:
         return 1.0 / (1.0 + math.exp(-lg))
     e = math.exp(lg)
     return e / (1.0 + e)
+
+
+def phi(z: float) -> float:
+    """Standard normal CDF."""
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def median(vals):
+    s = sorted(vals)
+    n = len(s)
+    if n == 0:
+        return None
+    if n % 2 == 1:
+        return s[n // 2]
+    return 0.5 * (s[n // 2 - 1] + s[n // 2])
 
 
 def round4(x: float):
@@ -236,6 +233,23 @@ def classify(trophy: dict):
     return ("activity", 30.0, 0.9, 1.5)
 
 
+def transition_group(trophy: dict, group: str) -> str:
+    """Coarser grouping used ONLY for transition factors (round-7 design):
+    ch1 / chain / fishing / platgrind / other; intro stands apart."""
+    desc = trophy.get("description", "") or ""
+    if group == "intro":
+        return "intro"
+    if "Complete Chapter 1." in desc:
+        return "ch1"
+    if group == "story":
+        return "chain"
+    if "fishing" in desc.lower():
+        return "fishing"
+    if group in ("plat", "completion", "grind"):
+        return "platgrind"
+    return "other"
+
+
 def x_of(t: datetime) -> float:
     """Log-time coordinate: ln(1 + (t - launch) / tau)."""
     dt_h = (t - LAUNCH).total_seconds() / 3600.0
@@ -283,135 +297,13 @@ def wls(points):
     return slope, intercept, resid
 
 
-def forecast_case(case: dict, name: str) -> dict:
-    trophies = case["trophies"]
-    history = case.get("history") or []
-    horizon_days = case["horizon_minutes"] / 1440.0
-    target = parse_time(case["target"])
-    x_target = x_of(target)
+def enforce_monotone(med, trophies, intro_idx):
+    """Story chain non-increasing; platinum <= completion <= all others.
 
-    states = distinct_reads(history)
-
-    # Fit window: only the last 24h of distinct states (see module docstring).
-    # Fall back to all states when the window holds fewer than 2.
-    if len(states) >= 2:
-        window_start = states[-1][0] - timedelta(hours=24)
-        fit_states = [s for s in states if s[0] >= window_start]
-        if len(fit_states) < 2:
-            fit_states = states
-    else:
-        fit_states = states
-    # Earner-count validation on the raw history (reconstruction must add up).
-    for read in history:
-        n = read["players_tracked"]
-        total = sum(
-            round(r * n / 100.0) for r in read["rates"] if r is not None
-        )
-        if total != read["trophies_earned"]:
-            print(
-                f"warning: {name} read {read['at']}: reconstructed earners "
-                f"{total} != trophies_earned {read['trophies_earned']}",
-                file=sys.stderr,
-            )
-            break
-
-    # Time span of the fit window, for scaling the fit residual to horizon.
-    if len(fit_states) >= 2:
-        span_days = max(
-            (fit_states[-1][0] - fit_states[0][0]).total_seconds() / 86400.0,
-            0.25,
-        )
-    else:
-        span_days = 0.25
-
-    # Refresh cadence from gaps between distinct states (hours, median gap).
-    if len(states) >= 3:
-        gaps = sorted(
-            (states[i + 1][0] - states[i][0]).total_seconds() / 3600.0
-            for i in range(len(states) - 1)
-        )
-        med_gap = gaps[len(gaps) // 2]
-        s_refresh = 0.2 + 0.1 * min(2.0, med_gap / 12.0)
-    else:
-        s_refresh = SPREAD_REFRESH_DEFAULT
-
-    groups = [classify(t) for t in trophies]
-    n_tr = len(trophies)
-
-    # Per-trophy series over the fit window's distinct states:
-    # (x, logit(rate), weight).
-    series = []
-    for i in range(n_tr):
-        pts = []
-        for j, (t, n, rates) in enumerate(fit_states):
-            r = rates[i]
-            if r is None:
-                continue
-            pts.append((x_of(t), logit(r), 1.0 + j))
-        series.append(pts)
-
-    # Per-trophy WLS slopes, then group-mean slopes for shrinkage.
-    own_slope = [None] * n_tr
-    own_resid = [0.0] * n_tr
-    for i in range(n_tr):
-        s, _, resid = wls(series[i])
-        own_slope[i] = s
-        own_resid[i] = resid
-    group_slope = {}
-    for g in {g[0] for g in groups}:
-        num = 0.0
-        den = 0.0
-        for i in range(n_tr):
-            if groups[i][0] == g and own_slope[i] is not None:
-                w = len(series[i])
-                num += w * own_slope[i]
-                den += w
-        group_slope[g] = (num / den) if den > 0 else 0.0
-
-    med_logit = [0.0] * n_tr
-    spread = [0.0] * n_tr
-    for i in range(n_tr):
-        group, cap, s_min, s_max = groups[i]
-        pts = series[i]
-        g_slope = group_slope[group]
-        if pts:
-            if own_slope[i] is not None:
-                b = (
-                    len(pts) * own_slope[i] + SHRINK_K * g_slope
-                ) / (len(pts) + SHRINK_K)
-            else:
-                b = g_slope
-            # Slowest groups never extrapolate a decline: dilution flattens.
-            if group in ("grind", "plat", "completion"):
-                b = max(b, 0.0)
-            # Refit the intercept at the shrunk slope (line through the data).
-            sw = sum(w for _, _, w in pts)
-            a = sum(w * (y - b * x) for x, y, w in pts) / sw
-            med = a + b * x_target
-            # Soft cap: 25% of any overshoot past the group cap survives.
-            cap_lg = logit(cap)
-            if med > cap_lg:
-                med = cap_lg + 0.25 * (med - cap_lg)
-            med = max(med, logit(0.01))
-            s_fit = own_resid[i] * math.sqrt(1.0 + horizon_days / span_days)
-            s = math.sqrt(s_fit ** 2 + s_refresh ** 2 + SPREAD_FLOOR ** 2)
-            s = min(max(s, s_min), s_max)
-        else:
-            # Never observed: group prior, middling spread.
-            med = logit(cap * 0.5) if group != "intro" else logit(99.99)
-            s = (s_min + s_max) / 2.0 if s_max > 0 else 1.0
-        med_logit[i] = med
-        spread[i] = s
-
-    # The 100% trophy is data-driven too: any trophy at 100% in the last
-    # read is the intro anomaly, whatever its description says.
-    if states:
-        last_rates = states[-1][2]
-        for i in range(n_tr):
-            if last_rates[i] is not None and last_rates[i] >= 99.99:
-                med_logit[i] = logit(99.99)
-
-    # Monotonicity on medians: story chain, then platinum/completion.
+    Operates on a copy of a median vector (used for m0 and for every
+    mixture component median)."""
+    med = list(med)
+    n_tr = len(med)
     chain = []
     for i, t in enumerate(trophies):
         desc = t.get("description", "") or ""
@@ -427,12 +319,9 @@ def forecast_case(case: dict, name: str) -> dict:
             chain.append((5, i))
     chain.sort()
     idxs = [i for _, i in chain]
-    # Enforce Ch1 >= Ch2 >= Ch3 >= Ch4 >= final: cap each later chapter at
-    # the one before it (a later chapter must never forecast above an
-    # earlier one; the earlier values are left untouched).
     for k in range(len(idxs) - 1):
-        if med_logit[idxs[k + 1]] > med_logit[idxs[k]]:
-            med_logit[idxs[k + 1]] = med_logit[idxs[k]]
+        if med[idxs[k + 1]] > med[idxs[k]]:
+            med[idxs[k + 1]] = med[idxs[k]]
     plat_i = next(
         (i for i, t in enumerate(trophies) if t.get("tier") == "platinum"), None
     )
@@ -444,47 +333,354 @@ def forecast_case(case: dict, name: str) -> dict:
         ),
         None,
     )
-    intro_idx = {
-        i
-        for i in range(n_tr)
-        if states and states[-1][2][i] is not None and states[-1][2][i] >= 99.99
-    }
     if comp_i is not None:
         others = [
-            med_logit[i]
+            med[i]
             for i in range(n_tr)
             if i != comp_i and i != plat_i and i not in intro_idx
         ]
         if others:
-            med_logit[comp_i] = min(med_logit[comp_i], min(others))
+            med[comp_i] = min(med[comp_i], min(others))
     if plat_i is not None and comp_i is not None:
-        med_logit[plat_i] = min(med_logit[plat_i], med_logit[comp_i])
+        med[plat_i] = min(med[plat_i], med[comp_i])
+    return med
 
-    # TWEAK2 (a): minimax blend — pull the extrapolated median toward the
-    # last observed rate (persistence), the B-world median proxy. The 100%
-    # trophy is untouched (last rate 100); trophies with no last rate keep
-    # their fitted median.
+
+def contains_0400(start: datetime, end: datetime) -> bool:
+    """True when some date's 04:00 UTC instant lies in (start, end]."""
+    day = start.date()
+    last_day = end.date()
+    while day <= last_day:
+        instant = datetime(day.year, day.month, day.day, 4, 0, 0,
+                           tzinfo=timezone.utc)
+        if start < instant <= end:
+            return True
+        day += timedelta(days=1)
+    return False
+
+
+def forecast_case(case: dict, name: str) -> dict:
+    trophies = case["trophies"]
+    history = case.get("history") or []
+    horizon_hours = case["horizon_minutes"] / 60.0
+    horizon_days = case["horizon_minutes"] / 1440.0
+    target = parse_time(case["target"])
+    x_target = x_of(target)
+    n_tr = len(trophies)
+
+    groups = [classify(t) for t in trophies]
+    tgroups = [transition_group(t, groups[i][0]) for i, t in enumerate(trophies)]
+
+    states = distinct_reads(history)
+
+    # Earner-count validation on the raw history (reconstruction must add up).
+    for read in history:
+        n = read["players_tracked"]
+        total = sum(
+            round(r * n / 100.0) for r in read["rates"] if r is not None
+        )
+        if total != read["trophies_earned"]:
+            print(
+                f"warning: {name} read {read['at']}: reconstructed earners "
+                f"{total} != trophies_earned {read['trophies_earned']}",
+                file=sys.stderr,
+            )
+            break
+
+    # ---- Model N: damped log-time fit over distinct states ----
+    if states:
+        n_last = states[-1][1]
+        x_last_state = x_of(states[-1][0])
+    else:
+        n_last = 0
+        x_last_state = x_target
+    n_pts = [
+        (x_of(t), math.log(n), 1.0 + j)
+        for j, (t, n, _) in enumerate(states)
+        if n and n > 0
+    ]
+    slope_n, _, resid_n = wls(n_pts)
+    if slope_n is None:
+        slope_n = 0.0
+        resid_n = 0.0
+    slope_n = max(slope_n, 0.0)
+    if n_last and n_last > 0:
+        dx = x_target - x_last_state
+        ln_n_tgt = math.log(n_last) + slope_n * N_DAMP_L * (
+            1.0 - math.exp(-dx / N_DAMP_L)
+        )
+        n_tgt = max(math.exp(ln_n_tgt), float(n_last))
+    else:
+        n_tgt = 0.0
+    if len(states) >= 2:
+        span_n_days = max(
+            (states[-1][0] - states[0][0]).total_seconds() / 86400.0, 0.25
+        )
+    else:
+        span_n_days = 0.25
+    s_n = resid_n * math.sqrt(1.0 + horizon_days / span_n_days)
+    g_trend = math.log(n_tgt / n_last) if (n_last and n_tgt) else 0.0
+
+    # ---- E fit window: last 24h of distinct states ----
+    if len(states) >= 2:
+        window_start = states[-1][0] - timedelta(hours=24)
+        fit_states = [s for s in states if s[0] >= window_start]
+        if len(fit_states) < 2:
+            fit_states = states
+    else:
+        fit_states = states
+    if len(fit_states) >= 2:
+        span_e_days = max(
+            (fit_states[-1][0] - fit_states[0][0]).total_seconds() / 86400.0,
+            0.25,
+        )
+    else:
+        span_e_days = 0.25
+
+    # Per-trophy earner series over the fit window + last observed earners.
+    e_points = []
+    e_last = [None] * n_tr
+    observed = [False] * n_tr
+    for i in range(n_tr):
+        pts = []
+        for j, (t, n, rates) in enumerate(fit_states):
+            r = rates[i]
+            if r is None or not n:
+                continue
+            e = round(r * n / 100.0)
+            if e >= 1:
+                pts.append((x_of(t), math.log(e), 1.0 + j))
+        e_points.append(pts)
+        for (t, n, rates) in reversed(states):
+            r = rates[i]
+            if r is not None:
+                observed[i] = True
+                e_last[i] = round(r * n / 100.0) if n else 0
+                break
+
+    own_slope = [None] * n_tr
+    own_resid = [0.0] * n_tr
+    for i in range(n_tr):
+        s, _, resid = wls(e_points[i])
+        own_slope[i] = s
+        own_resid[i] = resid
+    group_slope = {}
+    for gname in {g[0] for g in groups}:
+        num = 0.0
+        den = 0.0
+        for i in range(n_tr):
+            if groups[i][0] == gname and own_slope[i] is not None:
+                w = len(e_points[i])
+                num += w * own_slope[i]
+                den += w
+        group_slope[gname] = (num / den) if den > 0 else 0.0
+
+    # ---- Base medians m0 (pre-blend) and control spreads ----
+    med0 = [0.0] * n_tr
+    spread = [0.0] * n_tr
+    for i in range(n_tr):
+        group, cap, s_min, s_max = groups[i]
+        pts = e_points[i]
+        if not observed[i] or not n_tgt:
+            # Never observed: group prior, middling spread.
+            med = logit(cap * 0.5) if group != "intro" else logit(99.99)
+            s = (s_min + s_max) / 2.0 if s_max > 0 else 1.0
+        elif len(pts) < 2:
+            # Too few usable earner points: persist last earners.
+            e_tgt = float(e_last[i] or 0)
+            med = logit(100.0 * e_tgt / n_tgt)
+            s = math.sqrt(s_n ** 2 + SPREAD_FLOOR ** 2)
+            s = min(max(s, s_min), s_max) if s_max > 0 else s
+        else:
+            if own_slope[i] is not None:
+                b = (
+                    len(pts) * own_slope[i] + SHRINK_K * group_slope[group]
+                ) / (len(pts) + SHRINK_K)
+            else:
+                b = group_slope[group]
+            b = max(b, 0.0)
+            sw = sum(w for _, _, w in pts)
+            a = sum(w * (y - b * x) for x, y, w in pts) / sw
+            e_tgt = math.exp(a + b * x_target)
+            e_tgt = max(e_tgt, float(e_last[i] or 0))
+            e_tgt = min(e_tgt, cap / 100.0 * n_tgt)
+            med = logit(100.0 * e_tgt / n_tgt)
+            s_e = own_resid[i] * math.sqrt(1.0 + horizon_days / span_e_days)
+            s = math.sqrt(s_e ** 2 + s_n ** 2 + SPREAD_FLOOR ** 2)
+            s = min(max(s, s_min), s_max) if s_max > 0 else s
+        med0[i] = med
+        spread[i] = s * SPREAD_SYM
+
+    # The 100% trophy is data-driven: any trophy at >=99.99% in the last
+    # distinct state is the intro anomaly, whatever its description says.
+    intro_idx = set()
+    if states:
+        last_rates = states[-1][2]
+        for i in range(n_tr):
+            if last_rates[i] is not None and last_rates[i] >= 99.99:
+                intro_idx.add(i)
+                med0[i] = logit(99.99)
+
+    # ---- Blend alpha 0.35 toward persistence (on m0, before mixture) ----
     if states and BLEND_ALPHA > 0.0:
         last_rates = states[-1][2]
         for i in range(n_tr):
             r = last_rates[i]
             if r is None or r >= 99.99:
                 continue
-            med_logit[i] = (1.0 - BLEND_ALPHA) * med_logit[i] + BLEND_ALPHA * logit(r)
+            med0[i] = (1.0 - BLEND_ALPHA) * med0[i] + BLEND_ALPHA * logit(r)
 
+    # ---- Monotonicity on m0 ----
+    med0 = enforce_monotone(med0, trophies, intro_idx)
+
+    # ---- Transition events, factors, damping ----
+    events = []  # (J_N, {tgroup: f_g}, overall median ratio)
+    for k in range(len(states) - 1):
+        _, n0, r0 = states[k]
+        _, n1, r1 = states[k + 1]
+        if not n0 or n1 / n0 < EVENT_N_RATIO:
+            continue
+        ratios_all = []
+        per_group = {}
+        for i in range(n_tr):
+            if tgroups[i] == "intro":
+                continue
+            a, b = r0[i], r1[i]
+            if a is None or b is None or a <= 0:
+                continue
+            ratio = b / a
+            ratios_all.append(ratio)
+            per_group.setdefault(tgroups[i], []).append(ratio)
+        if not ratios_all:
+            continue
+        overall = median(ratios_all)
+        if overall is not None and overall <= EVENT_RATE_RATIO:
+            fmap = {}
+            for gname, vals in per_group.items():
+                fmap[gname] = max(median(vals), F_FLOOR)
+            events.append((n1 / n0, fmap, max(overall, F_FLOOR)))
+
+    n_past = len(events)
+    if events:
+        j_n = events[-1][0]
+        fmap_last = events[-1][1]
+        overall_last = events[-1][2]
+        f_per = [
+            1.0 if tgroups[i] == "intro"
+            else fmap_last.get(tgroups[i], overall_last)
+            for i in range(n_tr)
+        ]
+    elif len(states) <= 1:
+        j_n = J_N_PRIOR
+        f_per = [PRIOR_F[tgroups[i]] for i in range(n_tr)]
+    else:
+        j_n = J_N_SMOOTH
+        f_per = [F_SMOOTH] * n_tr
+    _ = j_n  # J_N is part of the design record; the mixture uses f and g.
+
+    if len(events) >= 2:
+        f_last = events[-1][1]
+        f_prev = events[-2][1]
+        rho_vals = []
+        for gname, fv in f_last.items():
+            pv = f_prev.get(gname)
+            if pv is not None and 0.0 < pv < 1.0 and 0.0 < fv < 1.0:
+                rho_vals.append(math.log(fv) / math.log(pv))
+        rho = median(rho_vals) if rho_vals else RHO_PRIOR
+    else:
+        rho = RHO_PRIOR
+
+    def c_of(k: int) -> float:
+        if k == 0:
+            return 0.0
+        base = rho ** n_past
+        if abs(1.0 - rho) < 1e-12:
+            return base * k
+        return base * (1.0 - rho ** k) / (1.0 - rho)
+
+    # ---- Event engine P1 (t7) ----
+    if history:
+        last_read_t = parse_time(history[-1]["at"])
+    else:
+        last_read_t = target - timedelta(hours=horizon_hours)
+    dt_hours = (target - last_read_t).total_seconds() / 3600.0
+    p_raw = 1.0 - math.exp(-dt_hours / HAZARD_HOURS) if dt_hours > 0 else 0.0
+    if contains_0400(last_read_t, target):
+        p_raw = max(p_raw, WINDOW_BOOST)
+    else:
+        p_raw *= GATE_MULT
+    p1 = min(max(p_raw * math.exp(-horizon_hours / DECAY_HOURS), 0.0), 1.0)
+
+    # ---- Hurdle weights over jump counts k = 0..5 (tail folded) ----
+    mu = horizon_hours / HAZARD_HOURS
+    mu_eff = mu * math.exp(-horizon_hours / DECAY_HOURS)
+
+    def pois(k: int, m: float) -> float:
+        return math.exp(-m) * (m ** k) / math.factorial(k)
+
+    denom = 1.0 - pois(0, mu_eff)
+    weights = [1.0 - p1]
+    if denom > 1e-12:
+        for k in range(1, 5):
+            weights.append(p1 * pois(k, mu_eff) / denom)
+        tail = 1.0 - sum(pois(k, mu_eff) for k in range(0, 5))
+        weights.append(p1 * tail / denom)
+    else:
+        weights += [0.0] * 5
+
+    # ---- Component medians per trophy, monotonicity per component ----
+    comp_meds = []  # comp_meds[k][i]
+    raw_components = []
+    for k in range(6):
+        ck = c_of(k)
+        vec = []
+        for i in range(n_tr):
+            f_i = min(max(f_per[i], F_FLOOR), 1e9)
+            shift = max(0.0, ck * (-math.log(f_i)) - g_trend) if k > 0 else 0.0
+            vec.append(med0[i] - shift)
+        raw_components.append(vec)
+    for k in range(6):
+        comp_meds.append(enforce_monotone(raw_components[k], trophies, intro_idx))
+
+    # ---- Quantiles ----
     rows = []
     for i, trophy in enumerate(trophies):
         group = groups[i][0]
-        med = med_logit[i]
+        med = med0[i]
         s = spread[i]
-        qs = []
-        for z in Z:
-            if group == "intro" or i in intro_idx:
-                s_use = INTRO_DOWN if z < 0 else (INTRO_UP if z > 0 else 0.0)
-                lg = med + z * s_use if z != 0 else med
-            else:
-                lg = med + z * s
-            qs.append(round4(clamp_pct(100.0 * sigmoid(lg))))
+        if group == "intro" or i in intro_idx:
+            qs = []
+            for lev, z in zip(LEVELS, (-1.645, -0.674, 0.0, 0.674, 1.645)):
+                if z < 0:
+                    lg = med + z * INTRO_DOWN
+                elif z > 0:
+                    lg = med + z * INTRO_UP
+                else:
+                    lg = med
+                qs.append(round4(clamp_pct(100.0 * sigmoid(lg))))
+        else:
+            meds_i = [comp_meds[k][i] for k in range(6)]
+
+            def mix_cdf(x, meds=meds_i, ss=s):
+                return sum(
+                    w * phi((x - m) / ss) for w, m in zip(weights, meds)
+                )
+
+            qlog = []
+            for tau in LEVELS:
+                lo, hi = -12.0, 12.0
+                for _ in range(60):
+                    mid = 0.5 * (lo + hi)
+                    if mix_cdf(mid) < tau:
+                        lo = mid
+                    else:
+                        hi = mid
+                qlog.append(0.5 * (lo + hi))
+            if group == "story":
+                # down15-story: widen q05/q25 x1.5 in logit, anchored at q50.
+                qlog[0] = qlog[2] - DOWN15 * (qlog[2] - qlog[0])
+                qlog[1] = qlog[2] - DOWN15 * (qlog[2] - qlog[1])
+            qs = [round4(clamp_pct(100.0 * sigmoid(v))) for v in qlog]
         # Enforce non-decreasing after rounding (rounding can tie, never fall).
         for k in range(1, 5):
             if qs[k] < qs[k - 1]:
