@@ -127,6 +127,17 @@ decision 2026-11-20 16:43 WIB), under which it weakly dominates v4 on
 every aggregate (practice/real1/mean6 identical, real2 0.5139 vs
 0.5427).
 
+Round 14 (v8) leaves the non-frozen machinery untouched and fixes the
+one regime the frozen mode mishandled: a frozen history with a LONG
+horizon. v7's frozen point assumed exactly one more dilution whatever
+the horizon, so on a 30.8 h frozen backtest (launch reads -> S3) 53 of
+55 truths fell outside the band and the loss was 1.99. v8 compounds
+the measured factor by the hurdle's own expected jump count EK_f and
+widens the frozen band by the jump-count level uncertainty
+|ln F| * sd_K, both gated to frozen horizons over 24 h: that backtest
+drops to 0.68 while practice and every other measured set stay
+byte-identical to v7 (results/experiments-tweak14.md).
+
 Nothing here reads the network; output is deterministic.
 Quantiles are clamped to 0.01..99.99, non-decreasing, rounded to 4
 decimals half-up (same rounding as the starter).
@@ -463,6 +474,41 @@ def forecast_case(case: dict, name: str) -> dict:
     else:
         last_read_t0 = target - timedelta(hours=horizon_hours)
     frozen_mode = len(states) <= 1 and contains_0400(last_read_t0, target)
+    # Round 14 (h1f): frozen jump-count statistics (expected count and
+    # its sd under the hurdle weights, frozen renormalization applied),
+    # for the long-horizon frozen edits. Zero when not frozen.
+    ek_f = 0.0
+    sd_k = 0.0
+    if frozen_mode:
+        _dt = (target - last_read_t0).total_seconds() / 3600.0
+        _pr = 1.0 - math.exp(-_dt / HAZARD_HOURS) if _dt > 0 else 0.0
+        if contains_0400(last_read_t0, target):
+            _pr = max(_pr, WINDOW_BOOST)
+        else:
+            _pr *= GATE_MULT
+        _p1f = min(max(_pr * math.exp(-horizon_hours / DECAY_HOURS), 0.0), 1.0)
+        _mu = (horizon_hours / HAZARD_HOURS) * math.exp(
+            -horizon_hours / DECAY_HOURS)
+
+        def _pois2(k, m):
+            return math.exp(-m) * (m ** k) / math.factorial(k)
+
+        _den = 1.0 - _pois2(0, _mu)
+        if _den > 1e-12:
+            _ws = [1.0 - _p1f] + [
+                _p1f * _pois2(k, _mu) / _den for k in range(1, 5)
+            ] + [_p1f * (1.0 - sum(_pois2(k, _mu) for k in range(0, 5))) / _den]
+        else:
+            _ws = [1.0] + [0.0] * 5
+        _rest = sum(_ws[1:])
+        if _rest > 1e-12:
+            _ws = [0.0] + [w / _rest for w in _ws[1:]]
+        else:
+            _ws = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+        ek_f = sum(k * w for k, w in enumerate(_ws))
+        sd_k = math.sqrt(max(
+            sum((k ** 2) * w for k, w in enumerate(_ws)) - ek_f ** 2, 0.0))
+    frozen_pow = ek_f if (frozen_mode and horizon_hours > 24.0) else 1.0
 
     # Earner-count validation on the raw history (reconstruction must add up).
     for read in history:
@@ -625,7 +671,16 @@ def forecast_case(case: dict, name: str) -> dict:
     med0 = enforce_monotone(med0, trophies, intro_idx)
     if frozen_mode:
         for i in range(n_tr):
-            spread[i] = FROZEN_SIGMA[tgroups[i]]
+            if horizon_hours > 24.0:
+                # Round 14 (h1f): at long horizons the number of
+                # compounding dilutions is itself uncertain; the
+                # band must carry that level uncertainty.
+                spread[i] = math.sqrt(
+                    FROZEN_SIGMA[tgroups[i]] ** 2
+                    + (abs(math.log(FROZEN_F[tgroups[i]])) * sd_k) ** 2
+                )
+            else:
+                spread[i] = FROZEN_SIGMA[tgroups[i]]
 
     # ---- Transition events, factors, damping ----
     events = []  # (J_N, {tgroup: f_g}, overall median ratio)
@@ -768,7 +823,8 @@ def forecast_case(case: dict, name: str) -> dict:
                 # as logit-space shifts (the add construction carries a
                 # measured +0.009..+0.013 bias on the exact groups).
                 vec.append(logit(clamp_pct(
-                    100.0 * sigmoid(_base) * FROZEN_F[tgroups[i]])))
+                    100.0 * sigmoid(_base)
+                    * FROZEN_F[tgroups[i]] ** frozen_pow)))
             elif f_i > 1.0:
                 vec.append(med0[i] + k * min(math.log(f_i), SURGE_CAP_LN))
             else:
