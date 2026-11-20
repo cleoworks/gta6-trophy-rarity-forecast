@@ -1,9 +1,12 @@
 """gta6-trophy-rarity-forecast-01: forecast Exophase GTA VI trophy earn rates.
 
-Model v5 (tweak round 11 design "s3", sealed 2026-11-20): the v4 engine
-(t9_mix, described below) plus ONE change -- an upward-jump (surge)
-component in the scenario mixture. Implemented fresh from the written
-design in results/experiments-tweak11.md on top of the v4 code, whose
+Model v6 (tweak round 12, frozen-regime mode, sealed 2026-11-20): the
+v5 engine (described below) plus ONE change -- a frozen-regime mode
+for cases whose history never refreshed. Implemented from the written
+design in results/experiments-tweak12.md on top of the v5 code. The
+v5 layer is the round-11 design "s3": the v4 engine (t9_mix) plus an
+upward-jump (surge) component in the scenario mixture, implemented
+fresh from results/experiments-tweak11.md on top of the v4 code, whose
 design is results/experiments-tweak9.md (+ experiments-tweak7.md §
 Desain t7, experiments-tweak6.md § Desain t6, research-exophase.md §3).
 
@@ -79,7 +82,27 @@ per group from the case's own last jump (in-case factor, frozen prior,
 or smooth 1/3), never from any target. DOWN groups, the intro treatment,
 spread, blend and hurdle weights are exactly v4.
 
-Measured for this design (results/experiments-tweak11.md, 13 sets):
+Frozen-regime mode (the round-12 change): when the case history holds
+<= 1 distinct page state AND the interval (last read, target] contains
+a 04:00 UTC instant, the page demonstrably did not refresh during the
+observation window and the daily refresh falls inside the horizon. In
+that regime (i) the no-jump mixture component is dropped (weights
+renormalized over k >= 1), (ii) every jump component collapses to the
+prior point forecast m0 + ln f_g (the launch->S1 per-group factor
+already used for frozen histories; the multi-jump damping ladder
+models >= 2 refreshes inside the horizon, which the observed >= 4.5 h
+refresh cadence makes negligible at 90 minutes), (iii) the spread is
+the measured launch->S1 residual dispersion per transition group
+(FROZEN_SIGMA, same public-snapshot provenance as PRIOR_F; the 0.05
+floor is the 2-dp rate-quantization scale) and the story down15
+widening is off, and (iv) the persistence blend is skipped. Outside
+this regime the output is byte-identical to v5 (verified on all
+measurement sets: the detector cannot fire on a history containing a
+jump, so the final case -- whose history holds several refreshes --
+is unaffected). Measured (results/experiments-tweak12.md): practice
+0.2530 -> 0.0839, real1/real2/mean6 unchanged.
+
+Measured for the v5 design (results/experiments-tweak11.md, 13 sets):
 practice 0.2530, real1 0.2357, real2 0.5139, gen1 0.1841/0.6368/0.2391,
 gen2 0.1749/0.6629/0.2509, mean6 0.3581, worst13 0.7949,
 PRAK 0.2861/0.4687/0.1434/0.7949, coverage 0.982. Byte-identical to v4
@@ -131,6 +154,16 @@ WINDOW_BOOST = 0.8
 GATE_MULT = 0.03
 RHO_PRIOR = 0.689
 SURGE_CAP_LN = math.log(2.0)  # v5: per-component cap on the surge ln-factor
+FROZEN_SIGMA = {  # round 12: launch->S1 residual dispersion (logit) per
+    # transition group, measured in diag_r12.py from the public snapshot
+    # pair (same provenance as PRIOR_F); 0.05 = 2dp-quantization floor.
+    "ch1": 0.05,
+    "chain": 0.05,
+    "fishing": 0.05,
+    "platgrind": 0.2188,
+    "other": 0.2022,
+    "intro": 0.0,
+}
 J_N_PRIOR = 6.06
 J_N_SMOOTH = 3.0
 F_SMOOTH = 1.0 / 3.0
@@ -391,6 +424,16 @@ def forecast_case(case: dict, name: str) -> dict:
 
     states = distinct_reads(history)
 
+    # ---- Frozen-regime detection (round 12) ----
+    # Frozen history (<= 1 distinct state) whose horizon contains the
+    # daily 04:00 UTC refresh instant: the refresh is the expected
+    # event, not a 22.5%-weighted tail branch.
+    if history:
+        last_read_t0 = parse_time(history[-1]["at"])
+    else:
+        last_read_t0 = target - timedelta(hours=horizon_hours)
+    frozen_mode = len(states) <= 1 and contains_0400(last_read_t0, target)
+
     # Earner-count validation on the raw history (reconstruction must add up).
     for read in history:
         n = read["players_tracked"]
@@ -540,7 +583,7 @@ def forecast_case(case: dict, name: str) -> dict:
                 med0[i] = logit(99.99)
 
     # ---- Blend alpha 0.35 toward persistence (on m0, before mixture) ----
-    if states and BLEND_ALPHA > 0.0:
+    if states and BLEND_ALPHA > 0.0 and not frozen_mode:
         last_rates = states[-1][2]
         for i in range(n_tr):
             r = last_rates[i]
@@ -550,6 +593,9 @@ def forecast_case(case: dict, name: str) -> dict:
 
     # ---- Monotonicity on m0 ----
     med0 = enforce_monotone(med0, trophies, intro_idx)
+    if frozen_mode:
+        for i in range(n_tr):
+            spread[i] = FROZEN_SIGMA[tgroups[i]]
 
     # ---- Transition events, factors, damping ----
     events = []  # (J_N, {tgroup: f_g}, overall median ratio)
@@ -645,6 +691,12 @@ def forecast_case(case: dict, name: str) -> dict:
         weights.append(p1 * tail / denom)
     else:
         weights += [0.0] * 5
+    if frozen_mode:
+        rest = sum(weights[1:])
+        if rest > 1e-12:
+            weights = [0.0] + [w / rest for w in weights[1:]]
+        else:
+            weights = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
 
     # ---- Component medians per trophy, monotonicity per component ----
     # v5 change (round-11 design "s3"): a group whose last jump factor
@@ -664,6 +716,8 @@ def forecast_case(case: dict, name: str) -> dict:
             f_i = min(max(f_per[i], F_FLOOR), 1e9)
             if k == 0:
                 vec.append(med0[i])
+            elif frozen_mode:
+                vec.append(med0[i] + math.log(f_i))
             elif f_i > 1.0:
                 vec.append(med0[i] + k * min(math.log(f_i), SURGE_CAP_LN))
             else:
@@ -707,7 +761,7 @@ def forecast_case(case: dict, name: str) -> dict:
                     else:
                         hi = mid
                 qlog.append(0.5 * (lo + hi))
-            if group == "story":
+            if group == "story" and not frozen_mode:
                 # down15-story: widen q05/q25 x1.5 in logit, anchored at q50.
                 qlog[0] = qlog[2] - DOWN15 * (qlog[2] - qlog[0])
                 qlog[1] = qlog[2] - DOWN15 * (qlog[2] - qlog[1])
