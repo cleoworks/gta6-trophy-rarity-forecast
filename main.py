@@ -138,6 +138,24 @@ widens the frozen band by the jump-count level uncertainty
 drops to 0.68 while practice and every other measured set stay
 byte-identical to v7 (results/experiments-tweak14.md).
 
+Round 15 (v9) adds one gated change at the quantile stage: when the
+case's own last transition contains NO up group (every transition
+factor f_g <= 1), the upper mixture quantiles are tightened toward
+q50 (logit deviations of q75/q95 x 0.80). The observed transition
+process is asymmetric -- downward dilution is the violent,
+fat-tailed direction, while upward moves are either trend-following
+(already in the median via the earner fit) or concentrated surges
+that the surge components already price when a case shows an up
+group. Where no up group is on record, the symmetric upper tail
+double-counts generic upside risk; the lower half of the band,
+which carries all the dilution insurance, is untouched. Measured
+(results/experiments-tweak15.md): gen1 A 0.1841 -> 0.1713, gen2 A
+0.1749 -> 0.1642, mean6 0.3581 -> 0.3498, the B worlds improve too;
+realL1 pays +0.0147 (inside the pre-registered +0.02 tolerance);
+practice, real2 and realL2 are byte-identical to v8 (frozen mode /
+surge gate). The final case's last observed transition contains up
+groups (Chapter 1, fishing), so its forecast is unchanged from v8.
+
 Nothing here reads the network; output is deterministic.
 Quantiles are clamped to 0.01..99.99, non-decreasing, rounded to 4
 decimals half-up (same rounding as the starter).
@@ -880,6 +898,12 @@ def forecast_case(case: dict, name: str) -> dict:
                 # down15-story: widen q05/q25 x1.5 in logit, anchored at q50.
                 qlog[0] = qlog[2] - DOWN15 * (qlog[2] - qlog[0])
                 qlog[1] = qlog[2] - DOWN15 * (qlog[2] - qlog[1])
+            if not frozen_mode and not any(f > 1.0 for f in f_per):
+                # Round 15 (k1): upper-tail tightening x0.80 around q50,
+                # gated on no up-group in the case's own last transition
+                # (design: results/experiments-tweak15.md).
+                qlog[3] = qlog[2] + 0.8 * (qlog[3] - qlog[2])
+                qlog[4] = qlog[2] + 0.8 * (qlog[4] - qlog[2])
             qs = [round4(clamp_pct(100.0 * sigmoid(v))) for v in qlog]
         # Enforce non-decreasing after rounding (rounding can tie, never fall).
         for k in range(1, 5):
