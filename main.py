@@ -210,6 +210,35 @@ byte-identical to v11. Scope honesty: the final case is sparse
 with jumps, so the corrected chain and the horizon-grown kappa
 both fire there (kappa reaches its 1.0 cap at 108.5 h).
 
+Round 20 (v13) replaces the round-17 flat x1.30 widening with a
+dispersion-derived accumulation under the SAME gate. The
+per-refresh residual dispersion of the four observed transitions
+(launch->S1, S1->S2, S2->S3, S3->S4; median move removed,
+floor/ceiling trophies excluded, n = 181 trophy-transitions)
+pools to RMS 0.744 logit (sigma_ref^2 = 0.553); the clean
+inter-refresh gaps (8.48, 20.28, 4.03 h) average T_REF = 10.93 h.
+Treating per-refresh residual moves as independent, a window of
+R = h / T_REF refreshes adds beta * R * sigma_ref^2 of variance on
+top of the in-case spread (which already reflects ~one refresh of
+fit uncertainty): s' = sqrt(s^2 + beta * R * sigma_ref^2). The
+additive form widens degenerate-spread trophies most (realL1's
+pre-widening spread minimum is 0.350 vs 0.560 on the second gated
+set) -- the asymmetry the two gated backtests call for. In-case
+jump dispersion is NOT used: every gated case holds at most one
+informative event and it is regime-blind. beta is the single
+strength parameter, picked from the pre-registered grid
+{0.25, 0.50, 0.75, 1.00, 1.50} by the pre-registered rule -- both
+gated sets must not regress (realL3, history <= S2 -> S4 at
+24.3 h, built Round 20, <= its v12 baseline + 0.01) and the
+(realL1 + realL3) average is minimized -- which selects
+beta = 1.50. Measured (results/experiments-tweak20.md): realL1
+0.7964 -> 0.7187 (out-of-band 21 -> 17), realL3 0.5558 -> 0.5346;
+every other measured set byte-identical to v12 (the gate fires
+nowhere else). Scope honesty: on the final case (R = 9.93) the
+median spread widens ~4.7x (vs the flat 1.30x of rounds 17-19) --
+the sqrt extrapolation of the same accumulation the two gated
+backtests disciplined at 24-29 h; medians are unchanged from v12.
+
 Nothing here reads the network; output is deterministic.
 Quantiles are clamped to 0.01..99.99, non-decreasing, rounded to 4
 decimals half-up (same rounding as the starter).
@@ -761,7 +790,8 @@ def forecast_case(case: dict, name: str) -> dict:
     # spread (INTRO_DOWN), so it is untouched; frozen mode carries
     # its own band (round 14) and is untouched.
     if not frozen_mode and horizon_hours > 24.0 and len(states) <= 5:
-        spread = [s * 1.30 for s in spread]
+        _add = 1.50 * (horizon_hours / 10.93) * 0.553
+        spread = [math.sqrt(s * s + _add) for s in spread]
 
     # ---- Transition events, factors, damping ----
     events = []  # (J_N, {tgroup: f_g}, overall median ratio)
