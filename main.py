@@ -178,6 +178,22 @@ jumps, so this term DOES fire there -- it is the first change
 since v5 whose final-case forecast differs from its predecessor,
 in the direction the two observed transitions support.
 
+Round 17 (v11) adds one gated change at the spread stage: in
+non-frozen cases whose horizon exceeds 24 h and whose history is
+sparse (<= 5 distinct states), every per-trophy spread is widened
+x1.30 after the per-group clamp. In that regime the measured loss
+is position-dominated by moves the clamped band cannot reach (on
+the 28.8 h sparse backtest 14 of 55 truths land above q95 and the
+width-rescale oracle is 3.0), while the spread machinery's own
+horizon scaling saturates because the sparse earner fits carry
+almost no residual information; the gate keeps every rich-history
+and short-horizon case byte-identical. Measured
+(results/experiments-tweak17.md): realL1 0.8333 -> 0.8044, every
+other measured set byte-identical to v10. Scope honesty: the
+final case (108.5 h, sparse, non-frozen) IS in this regime, so
+its band widens x1.30 -- the honest direction for a 4.5-day
+horizon whose jump count is itself uncertain.
+
 Nothing here reads the network; output is deterministic.
 Quantiles are clamped to 0.01..99.99, non-decreasing, rounded to 4
 decimals half-up (same rounding as the starter).
@@ -721,6 +737,15 @@ def forecast_case(case: dict, name: str) -> dict:
                 )
             else:
                 spread[i] = FROZEN_SIGMA[tgroups[i]]
+
+    # ---- Round 17 (d1): long-horizon sparse-history band widening ----
+    # Design: results/experiments-tweak17.md. Non-frozen, horizon
+    # over 24 h, sparse history (<= 5 distinct states): widen every
+    # spread x1.30 after the clamp. The intro treatment does not use
+    # spread (INTRO_DOWN), so it is untouched; frozen mode carries
+    # its own band (round 14) and is untouched.
+    if not frozen_mode and horizon_hours > 24.0 and len(states) <= 5:
+        spread = [s * 1.30 for s in spread]
 
     # ---- Transition events, factors, damping ----
     events = []  # (J_N, {tgroup: f_g}, overall median ratio)
