@@ -1,5 +1,19 @@
 """gta6-trophy-rarity-forecast-01: forecast Exophase GTA VI trophy earn rates.
 
+Model v7 (tweak round 13, frozen-mode alignment, sealed 2026-11-20):
+the v6 engine (described below) with its frozen-regime mode aligned
+to the measured launch->S1 transition statistics at full precision
+(results/experiments-tweak13.md): (i) frozen spreads are the measured
+per-group residual dispersions with no floor (ch1 0.0051, chain
+0.0043, fishing 0.0024, platgrind 0.2188, other 0.2022), (ii) the
+100% trophy is flat at its median in frozen mode (its measured
+transition dispersion is exactly zero), and (iii) frozen component
+medians apply the measured group-median rate ratios (FROZEN_F) as
+rate ratios -- logit(rate x f) -- instead of logit-space shifts,
+with the story chain sharing one base median. Outside frozen mode
+the output is byte-identical to v6. Measured: practice 0.0839 ->
+0.0739, coverage 0.945, real1/real2/mean6 unchanged.
+
 Model v6 (tweak round 12, frozen-regime mode, sealed 2026-11-20): the
 v5 engine (described below) plus ONE change -- a frozen-regime mode
 for cases whose history never refreshed. Implemented from the written
@@ -154,15 +168,31 @@ WINDOW_BOOST = 0.8
 GATE_MULT = 0.03
 RHO_PRIOR = 0.689
 SURGE_CAP_LN = math.log(2.0)  # v5: per-component cap on the surge ln-factor
-FROZEN_SIGMA = {  # round 12: launch->S1 residual dispersion (logit) per
-    # transition group, measured in diag_r12.py from the public snapshot
-    # pair (same provenance as PRIOR_F); 0.05 = 2dp-quantization floor.
-    "ch1": 0.05,
-    "chain": 0.05,
-    "fishing": 0.05,
+FROZEN_SIGMA = {  # round 13: launch->S1 residual dispersion (logit)
+    # per transition group at full measured precision (diag_r13.py; the
+    # round-12 table floored the three exact groups at 0.05). RMS is
+    # measured around the prior point forecasts (the diag R-d residuals)
+    # and kept for every frozen variant: re-measuring around the
+    # median-ratio points gives 0.0000 for the exact groups -- an
+    # artifact of fitting center and width to the same single
+    # transition, and a coverage trap (see experiments-tweak13.md (f)).
+    "ch1": 0.0051,
+    "chain": 0.0043,
+    "fishing": 0.0024,
     "platgrind": 0.2188,
     "other": 0.2022,
     "intro": 0.0,
+}
+FROZEN_F = {  # round 13: measured group-median launch->S1 rate ratios
+    # (diag_r13.py, same public snapshot pair as PRIOR_F -- the priors
+    # are these ratios rounded to 2 decimals). Used only by the g3
+    # frozen point construction, applied as rate ratios.
+    "ch1": 0.392,
+    "chain": 0.209091,
+    "fishing": 0.568627,
+    "platgrind": 0.162698,
+    "other": 0.180851,
+    "intro": 1.0,
 }
 J_N_PRIOR = 6.06
 J_N_SMOOTH = 3.0
@@ -707,6 +737,17 @@ def forecast_case(case: dict, name: str) -> dict:
     # already assuming them (subtracting g would make the surge a no-op,
     # exactly the round-7 K2 pattern). DOWN groups keep the v4 crash
     # components exactly; k = 0 is m0 for every group.
+    # Round 13 (g2+): story-cohort exactness in frozen mode. The chain
+    # trophies share one earner count at both observed states of the
+    # launch->S1 transition, so in frozen mode they share one base
+    # median: the cohort's median last-earner count, reconstructed.
+    frozen_chain_med0 = None
+    if frozen_mode:
+        _ch_e = [e_last[i] for i in range(n_tr)
+                 if tgroups[i] == "chain" and e_last[i] is not None]
+        if _ch_e and n_tgt:
+            frozen_chain_med0 = logit(100.0 * median(_ch_e) / n_tgt)
+
     comp_meds = []  # comp_meds[k][i]
     raw_components = []
     for k in range(6):
@@ -717,7 +758,17 @@ def forecast_case(case: dict, name: str) -> dict:
             if k == 0:
                 vec.append(med0[i])
             elif frozen_mode:
-                vec.append(med0[i] + math.log(f_i))
+                _base = med0[i]
+                if (frozen_chain_med0 is not None
+                        and tgroups[i] == "chain"
+                        and e_last[i] is not None):
+                    _base = frozen_chain_med0
+                # Round 13 (g3): the measured factors are RATE ratios;
+                # apply them as rate ratios (logit of the product), not
+                # as logit-space shifts (the add construction carries a
+                # measured +0.009..+0.013 bias on the exact groups).
+                vec.append(logit(clamp_pct(
+                    100.0 * sigmoid(_base) * FROZEN_F[tgroups[i]])))
             elif f_i > 1.0:
                 vec.append(med0[i] + k * min(math.log(f_i), SURGE_CAP_LN))
             else:
@@ -735,14 +786,22 @@ def forecast_case(case: dict, name: str) -> dict:
         s = spread[i]
         if group == "intro" or i in intro_idx:
             qs = []
-            for lev, z in zip(LEVELS, (-1.645, -0.674, 0.0, 0.674, 1.645)):
-                if z < 0:
-                    lg = med + z * INTRO_DOWN
-                elif z > 0:
-                    lg = med + z * INTRO_UP
-                else:
-                    lg = med
-                qs.append(round4(clamp_pct(100.0 * sigmoid(lg))))
+            if frozen_mode:
+                # Round 13: the measured launch->S1 dispersion of the
+                # 100% trophy is exactly zero (100.00 -> 100.00, its
+                # earners scaled with N exactly). FROZEN_SIGMA["intro"]
+                # = 0.0, applied here: flat at the median in frozen
+                # mode. Outside frozen mode the v3 treatment stands.
+                qs = [round4(clamp_pct(100.0 * sigmoid(med)))] * 5
+            else:
+                for lev, z in zip(LEVELS, (-1.645, -0.674, 0.0, 0.674, 1.645)):
+                    if z < 0:
+                        lg = med + z * INTRO_DOWN
+                    elif z > 0:
+                        lg = med + z * INTRO_UP
+                    else:
+                        lg = med
+                    qs.append(round4(clamp_pct(100.0 * sigmoid(lg))))
         else:
             meds_i = [comp_meds[k][i] for k in range(6)]
 
