@@ -194,6 +194,22 @@ final case (108.5 h, sparse, non-frozen) IS in this regime, so
 its band widens x1.30 -- the honest direction for a 4.5-day
 horizon whose jump count is itself uncertain.
 
+Round 19 (v12) restricts the round-16 progression flow to the
+model's own nested chain -- chapter trophies plus the final mission
+only (the same set enforce_monotone chains) -- instead of every
+story-group trophy in id order, and lets the conversion share grow
+with horizon, kappa(h) = min(1, 0.50 * h / 8.5 h), capped by the
+nesting bound. The id-order chain let Breakfast Run (early content,
+not a chapter) act as reservoir for the Cartel Heist and pushed
+Chapter 3's median up through a reservoir it does not nest behind:
+on real3 those two lateral costs were 68% of the story loss.
+Measured (results/experiments-tweak19.md): real3 0.2046 -> 0.1682
+(story 0.4649 -> 0.2829), real2 0.4994 -> 0.4854, realL1 0.8044 ->
+0.7964; practice, real1, realL2, both gen batteries and PRAK are
+byte-identical to v11. Scope honesty: the final case is sparse
+with jumps, so the corrected chain and the horizon-grown kappa
+both fire there (kappa reaches its 1.0 cap at 108.5 h).
+
 Nothing here reads the network; output is deterministic.
 Quantiles are clamped to 0.01..99.99, non-decreasing, rounded to 4
 decimals half-up (same rounding as the starter).
@@ -862,10 +878,12 @@ def forecast_case(case: dict, name: str) -> dict:
     # (measured story medians there are already calibrated), so
     # the term stays off there; frozen mode is untouched.
     if not frozen_mode and n_past >= 1 and len(states) <= 5 and n_tgt:
-        seq = [i for i in range(n_tr) if groups[i][0] == "story"]
+        seq = [i for i in range(n_tr) if groups[i][0] == "story"
+               and ("Complete Chapter" in (trophies[i].get("description", "") or "")
+                    or (trophies[i].get("description", "") or "") == "Complete the final mission.")]
         seq.sort(key=lambda i: trophies[i]["id"])
         base_e = {i: sigmoid(med0[i]) * n_tgt for i in seq}
-        kappa = 0.5 * min(1.0, horizon_hours / 8.5)
+        kappa = min(1.0, 0.5 * horizon_hours / 8.5)
         for pos in range(1, len(seq)):
             j = seq[pos]
             gap = base_e[seq[pos - 1]] - base_e[j]
