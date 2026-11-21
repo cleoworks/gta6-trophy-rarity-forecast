@@ -239,6 +239,22 @@ median spread widens ~4.7x (vs the flat 1.30x of rounds 17-19) --
 the sqrt extrapolation of the same accumulation the two gated
 backtests disciplined at 24-29 h; medians are unchanged from v12.
 
+Rounds 23-26 (display-grid snap family, sealed as v14 in round
+26; designs: experiments-rebuild23.md, experiments-tweak24.md,
+experiments-tweak26.md): the published rates live exactly on a
+0.01% display grid, so the final quantiles are reported as grid
+atoms -- the smallest atom whose reconstructed-CDF mass reaches
+the level (round-23 d1) -- with a per-level gate: q75/q95 snap
+only where the atom's logit cell is narrower than the trophy's
+own spread (round 24). Round 26 adds one exclusion on top: at
+case horizons over 24 h, trophies whose continuous median sits
+above the entry's 0.01 floor are NOT snapped (the measured
+long-horizon mid-trophy regression pool); floor trophies keep
+the snap at every horizon, and cases up to 24 h are unchanged
+from round 24. Measured vs v13: real4 -0.0202, real2 -0.0071,
+real1 -0.0023, real3 +0.0015, realL2 +0.0009, long-horizon sets
+at v13 levels, practice 0.0731.
+
 Nothing here reads the network; output is deterministic.
 Quantiles are clamped to 0.01..99.99, non-decreasing, rounded to 4
 decimals half-up (same rounding as the starter).
@@ -387,6 +403,60 @@ def round4(x: float):
         whole += 1
     value = whole / 10000.0
     return int(value) if value == int(value) else value
+
+
+def _logit_raw(p: float) -> float:
+    """Unclamped mathematical logit of a percentage (round 23/24)."""
+    return math.log(p / (100.0 - p))
+
+
+def _interp_cdf(xs, x: float) -> float:
+    """Round-23 reconstructed CDF: piecewise linear on the logit
+    scale through the five (quantile logit, level) points, edge
+    slopes extrapolated, clamped to [0, 1]. Duplicate x points
+    collapse keeping the largest level (right-continuous jump)."""
+    pts = []
+    for xv, tv in zip(xs, LEVELS):
+        if pts and xv == pts[-1][0]:
+            pts[-1] = (xv, max(pts[-1][1], tv))
+        else:
+            pts.append((xv, tv))
+    if len(pts) == 1:
+        return pts[0][1] if x >= pts[0][0] else 0.0
+    if x <= pts[0][0]:
+        (x0, t0), (x1, t1) = pts[0], pts[1]
+        v = t0 + (t1 - t0) * (x - x0) / (x1 - x0)
+    elif x >= pts[-1][0]:
+        (x0, t0), (x1, t1) = pts[-2], pts[-1]
+        v = t1 + (t1 - t0) * (x - x1) / (x1 - x0)
+    else:
+        v = pts[-1][1]
+        for k in range(len(pts) - 1):
+            if pts[k][0] <= x <= pts[k + 1][0]:
+                (x0, t0), (x1, t1) = pts[k], pts[k + 1]
+                v = t0 + (t1 - t0) * (x - x0) / (x1 - x0)
+                break
+    return min(1.0, max(0.0, v))
+
+
+def _snap_level(qlog, idx: int, s: float):
+    """Round-23 d1 display-grid snap with the round-24 per-level
+    gate, for one quantile level of one non-intro trophy. Returns
+    the output value (%) for that level."""
+    tau = LEVELS[idx]
+    cont = clamp_pct(100.0 * sigmoid(qlog[idx]))
+    if idx >= 3:
+        w = _logit_raw(min(cont + 0.005, 99.995)) - _logit_raw(
+            max(cont - 0.005, 0.001))
+        if not w < s:
+            return round4(cont)
+    j = int(round(cont * 100.0))
+    j = min(9999, max(1, j))
+    while j < 9999 and _interp_cdf(qlog, _logit_raw(j / 100.0 + 0.005)) < tau:
+        j += 1
+    while j > 1 and _interp_cdf(qlog, _logit_raw((j - 1) / 100.0 + 0.005)) >= tau:
+        j -= 1
+    return round4(j / 100.0)
 
 
 def parse_time(s: str) -> datetime:
@@ -1024,7 +1094,18 @@ def forecast_case(case: dict, name: str) -> dict:
                 # (design: results/experiments-tweak15.md).
                 qlog[3] = qlog[2] + 0.8 * (qlog[3] - qlog[2])
                 qlog[4] = qlog[2] + 0.8 * (qlog[4] - qlog[2])
-            qs = [round4(clamp_pct(100.0 * sigmoid(v))) for v in qlog]
+            conts = [clamp_pct(100.0 * sigmoid(v)) for v in qlog]
+            if horizon_hours > 24.0 and conts[2] > 0.01:
+                # Round 26 (tweak26): no display-grid snap for
+                # non-floor trophies when the case horizon exceeds
+                # 24 h -- the measured realL2 regression pool (mid
+                # trophies, q50/q75, long horizon). A floor trophy
+                # (continuous median at the entry's 0.01 floor)
+                # keeps the round-24 snap at every horizon, and
+                # cases at <= 24 h are unchanged from round 24.
+                qs = [round4(c) for c in conts]
+            else:
+                qs = [_snap_level(qlog, k, s) for k in range(5)]
         # Enforce non-decreasing after rounding (rounding can tie, never fall).
         for k in range(1, 5):
             if qs[k] < qs[k - 1]:
